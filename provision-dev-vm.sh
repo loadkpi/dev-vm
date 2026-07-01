@@ -100,10 +100,26 @@ packages:
   - python3-venv
   - unzip
   - ripgrep
+write_files:
+  - path: /usr/local/bin/setup-user-cli.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Install Claude Code + Codex CLI into the current user's npm prefix.
+      # Invoked as: sudo -u <user> -H bash /usr/local/bin/setup-user-cli.sh
+      set -euo pipefail
+      # Set per-user npm prefix so global installs go into ~/.npm-global
+      npm config set prefix "\$HOME/.npm-global"
+      # Idempotently add ~/.npm-global/bin to PATH in ~/.bashrc
+      if ! grep -qF '.npm-global/bin' "\$HOME/.bashrc"; then
+        echo 'export PATH="\$HOME/.npm-global/bin:\$PATH"' >> "\$HOME/.bashrc"
+      fi
+      # Install CLI tools owned by the user (no root required for future updates)
+      npm install -g @anthropic-ai/claude-code @openai/codex
 runcmd:
   - [ bash, -c, "curl -fsSL https://deb.nodesource.com/setup_22.x | bash -" ]
   - [ apt-get, install, -y, nodejs ]
-  - [ bash, -c, "npm install -g @anthropic-ai/claude-code @openai/codex" ]
+  - [ sudo, -u, $VM_USER, -H, bash, /usr/local/bin/setup-user-cli.sh ]
   - [ bash, -c, "echo 'cloud-init: dev tooling ready' > /etc/motd" ]
 EOF
 
