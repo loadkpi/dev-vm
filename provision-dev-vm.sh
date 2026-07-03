@@ -101,6 +101,15 @@ packages:
   - unzip
   - ripgrep
 write_files:
+  - path: /etc/default/grub.d/99-headless.cfg
+    permissions: '0644'
+    content: |
+      # Headless VM: never block at the GRUB menu waiting for a keypress.
+      # After an unclean shutdown Ubuntu sets 'recordfail', which otherwise makes
+      # GRUB wait indefinitely for input — fatal with no console. Auto-boot fast.
+      GRUB_TIMEOUT=2
+      GRUB_TIMEOUT_STYLE=menu
+      GRUB_RECORDFAIL_TIMEOUT=2
   - path: /usr/local/bin/setup-user-cli.sh
     permissions: '0755'
     content: |
@@ -120,6 +129,7 @@ runcmd:
   - [ bash, -c, "curl -fsSL https://deb.nodesource.com/setup_22.x | bash -" ]
   - [ apt-get, install, -y, nodejs ]
   - [ sudo, -u, $VM_USER, -H, bash, /usr/local/bin/setup-user-cli.sh ]
+  - [ update-grub ]
   - [ bash, -c, "echo 'cloud-init: dev tooling ready' > /etc/motd" ]
 EOF
 
@@ -163,9 +173,13 @@ cat <<EOF
      codex         # Codex CLI    (run login once)
 
   Manage:
-     VBoxManage controlvm "$VM_NAME" poweroff       # stop
-     VBoxManage startvm   "$VM_NAME" --type headless# start again
-     VBoxManage unregistervm "$VM_NAME" --delete    # destroy + reclaim disk
+     VBoxManage controlvm "$VM_NAME" acpipowerbutton # stop GRACEFULLY (preferred)
+     VBoxManage controlvm "$VM_NAME" poweroff        # hard stop — only if hung
+     VBoxManage startvm   "$VM_NAME" --type headless # start again
+     VBoxManage unregistervm "$VM_NAME" --delete     # destroy + reclaim disk
+
+  ⚠  Prefer 'acpipowerbutton' (clean shutdown). A hard 'poweroff' mid-apt can
+     corrupt the kernel/initrd and leave the VM unbootable at GRUB.
 
   Disk: thin VDI at $DISK (grows only as used).
 EOF
