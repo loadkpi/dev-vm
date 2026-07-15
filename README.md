@@ -76,6 +76,45 @@ VBoxManage unregistervm "dev-vm" --delete            # destroy + reclaim disk
 > ⚠ **Always prefer `acpipowerbutton`.** A hard `poweroff` mid-apt can corrupt
 > the kernel/initrd and leave the VM unbootable at GRUB — see Troubleshooting.
 
+## Shared folder (host ↔ guest)
+
+`VBoxManage sharedfolder add` is a **host-side** command — run it on the
+machine where VirtualBox itself is installed, not inside the guest. It works
+whether the VM is powered off or already running; you don't need to reinstall
+or recreate the VM.
+
+```sh
+# on the host
+VBoxManage sharedfolder add "dev-vm" \
+  --name shared \
+  --hostpath "/path/on/host" \
+  --automount
+```
+
+Inside the guest, mount it via `/etc/fstab` (one-time setup, already applied
+on this VM):
+
+```sh
+echo "vboxsf" | sudo tee /etc/modules-load.d/vboxsf.conf   # load vboxsf on boot
+sudo mkdir -p /mnt/shared
+echo "shared  /mnt/shared  vboxsf  defaults,uid=1000,gid=1000  0  0" | sudo tee -a /etc/fstab
+sudo mount -a
+```
+
+**Why `/etc/fstab` + the bare `vboxsf` kernel module, instead of relying on
+`--automount`'s usual `/media/sf_*` auto-mount:** on this cloud image only the
+`vboxguest` kernel module is present. The `vboxsf` filesystem module is also
+in the kernel tree (no extra package needed — `sudo modprobe vboxsf` is
+enough), but the full Guest Additions **userland** daemon
+(`virtualbox-guest-utils`, which runs `VBoxService` and auto-mounts shares
+under `/media/sf_<name>`) is *not* installed. Pulling it in just for automount
+convenience would add several MB and go against this project's disk-frugal
+design (see "Why it's disk-frugal" above). An `/etc/fstab` entry gets the same
+result — the share mounted at boot — using only what's already on the image.
+If you'd rather have the full automount experience, `apt install
+virtualbox-guest-utils` is the alternative; then a bare `--automount` on the
+host is enough and no `fstab` entry is needed.
+
 ## Troubleshooting
 
 ### `ssh` fails right after start: `Connection reset` / `kex_exchange_identification` / banner timeout
