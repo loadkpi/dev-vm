@@ -76,6 +76,44 @@ VBoxManage unregistervm "dev-vm" --delete            # destroy + reclaim disk
 > ⚠ **Always prefer `acpipowerbutton`.** A hard `poweroff` mid-apt can corrupt
 > the kernel/initrd and leave the VM unbootable at GRUB — see Troubleshooting.
 
+## Grow the disk (no rebuild)
+
+Ran out of space (`No space left on device`, `df` shows `/` at 100%)? The thin
+VDI can be enlarged **in place** — no rebuild. VirtualBox can't resize a disk
+while the VM runs (the medium is locked), so it's a stop → resize → start cycle.
+
+```sh
+# on the HOST — VM must be off first
+VBoxManage controlvm dev-vm acpipowerbutton     # graceful stop (never a bare poweroff)
+while VBoxManage list runningvms | grep -q dev-vm; do sleep 1; done   # wait until stopped
+VBoxManage modifymedium disk ~/.local/share/dev-vm/dev-vm.vdi \
+  --resize 32768                                # new VIRTUAL size in MB (32768 = 32 GB)
+VBoxManage startvm dev-vm --type headless
+```
+
+On the next boot **cloud-init auto-grows the rootfs** (its `growpart` + `resizefs`
+modules run every boot), so the new space is usable with no extra steps. Verify
+inside the guest:
+
+```sh
+ssh -p 2222 dev@127.0.0.1
+df -h /            # / should now show the larger size
+```
+
+If it didn't grow automatically, expand the partition + filesystem by hand —
+both are online-safe, no reboot needed:
+
+```sh
+sudo growpart /dev/sda 1     # /dev/sda = disk, 1 = partition; rootfs is last on
+                             # disk (after sda14/15/16), so it grows into the new space
+sudo resize2fs /dev/sda1     # stretch ext4 to fill the enlarged partition
+```
+
+- `--resize` only **grows** a thin VDI with no snapshots (both true here); it
+  can't shrink, and the new size must exceed the current virtual size.
+- The VDI stays thin — the host `.vdi` grows only as the guest actually writes,
+  up to the new virtual ceiling.
+
 ## Shared folder (host ↔ guest)
 
 `VBoxManage sharedfolder add` is a **host-side** command — run it on the
