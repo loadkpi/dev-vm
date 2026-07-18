@@ -21,6 +21,9 @@ set -euo pipefail
 VM_NAME="${VM_NAME:-dev-vm}"
 RAM_MB="${RAM_MB:-4096}"
 CPUS="${CPUS:-2}"
+SWAP_GB="${SWAP_GB:-4}"             # guest swapfile; 0 disables. Elastic buffer so
+                                    # memory-heavy builds (go build/test) thrash
+                                    # instead of hard-freezing on this small-RAM VM
 DISK_GB="${DISK_GB:-16}"            # virtual size; thin, so ~3-4 GB real usage
 UBUNTU_REL="${UBUNTU_REL:-noble}"   # noble = 24.04 LTS
 SSH_PORT="${SSH_PORT:-2222}"        # host port -> guest 22
@@ -126,6 +129,9 @@ write_files:
       # Install CLI tools owned by the user (no root required for future updates)
       npm install -g @anthropic-ai/claude-code @openai/codex
 runcmd:
+  # Elastic swap first, so the rest of provisioning (and later builds) can lean on
+  # it. Runs after cloud-init has grown the rootfs, so the space is available.
+  - [ bash, -c, "if [ ${SWAP_GB} -gt 0 ] && ! swapon --show | grep -q /swapfile; then fallocate -l ${SWAP_GB}G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && (grep -qF /swapfile /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab); fi" ]
   - [ bash, -c, "curl -fsSL https://deb.nodesource.com/setup_22.x | bash -" ]
   - [ apt-get, install, -y, nodejs ]
   - [ sudo, -u, $VM_USER, -H, bash, /usr/local/bin/setup-user-cli.sh ]

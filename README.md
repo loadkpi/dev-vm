@@ -42,6 +42,7 @@ VM_NAME=agent-box RAM_MB=4096 DISK_GB=12 SSH_PORT=2222 ./provision-dev-vm.sh
 | `VM_NAME`    | dev-vm  | VirtualBox VM name                       |
 | `RAM_MB`     | 4096    | RAM                                      |
 | `CPUS`       | 2       | vCPUs                                    |
+| `SWAP_GB`    | 4       | guest swapfile size (`0` disables)       |
 | `DISK_GB`    | 16      | virtual disk size (thin; lower = leaner) |
 | `UBUNTU_REL` | noble   | Ubuntu release codename                  |
 | `SSH_PORT`   | 2222    | host port forwarded to guest :22         |
@@ -49,8 +50,14 @@ VM_NAME=agent-box RAM_MB=4096 DISK_GB=12 SSH_PORT=2222 ./provision-dev-vm.sh
 | `PUBKEY`     | auto    | SSH public key to authorize              |
 
 The script downloads the cloud image, makes a thin VDI, builds a cloud-init
-seed (creates the user, authorizes your SSH key, installs Node + the CLIs),
-then boots the VM headless.
+seed (creates the user, authorizes your SSH key, adds a `SWAP_GB` swapfile,
+installs Node + the CLIs), then boots the VM headless.
+
+The swapfile is an elastic buffer: on a small-RAM VM a memory-heavy build
+(`go build`/`go test`, native modules, big linkers) can spike past physical RAM.
+With **no swap** the kernel drops into direct-reclaim thrashing and the whole VM
+appears to *freeze* (SSH stops responding) rather than failing cleanly — see
+Troubleshooting. Swap lets the spike page out: the build gets slow, not fatal.
 
 ## After it boots
 
@@ -154,6 +161,54 @@ virtualbox-guest-utils` is the alternative; then a bare `--automount` on the
 host is enough and no `fstab` entry is needed.
 
 ## Troubleshooting
+
+### VM freezes / hangs during a heavy build (`go build`, `go test`, native modules)
+
+**Symptom.** A build kicked off inside the VM makes it go unresponsive: an
+existing SSH session stalls, new `ssh` connects but hangs before the shell,
+even `ps`/`find` time out. `nc -z 127.0.0.1 2222` still succeeds (that's just
+VirtualBox's NAT proxy, not the guest).
+
+**Cause.** Memory exhaustion. This is a small-RAM VM (default 4 GB), and a Go
+compile/link — especially of a large package, or alongside services like
+Docker/Postgres/MinIO — can use **multiple GB**. If swap is absent or too small,
+the kernel can't page the spike out; it goes into direct-reclaim thrashing and
+the box freezes instead of the build failing cleanly (often *no* OOM-kill is
+logged, which is why it hangs rather than dies).
+
+**Confirm it** — from the host, look inside (works unless it's fully wedged):
+
+```sh
+ssh -p 2222 dev@127.0.0.1 'free -h; swapon --show'   # available near 0? swap 0B?
+ssh -p 2222 dev@127.0.0.1 'ps -eo rss,comm --sort=-rss | head'   # find the hog
+```
+
+`available` near zero with `Swap: 0B` is the signature.
+
+**Fix.**
+
+1. **Add swap** (freshly-provisioned VMs get `SWAP_GB` automatically; older ones
+   may not). On `/` there's usually room:
+   ```sh
+   sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile
+   sudo mkswap /swapfile && sudo swapon /swapfile
+   echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab   # persist
+   ```
+2. **Give the VM more RAM** (host-side, needs a stop → start):
+   ```sh
+   VBoxManage controlvm dev-vm acpipowerbutton
+   while VBoxManage list runningvms | grep -q dev-vm; do sleep 1; done
+   VBoxManage modifyvm dev-vm --memory 8192
+   VBoxManage startvm dev-vm --type headless
+   ```
+3. **Lower build parallelism** to cut the peak: `go build -p 1 ./...`,
+   `go test -p 1 -parallel 1 ./...`; don't run Docker/Postgres/MinIO at the same
+   time if the build doesn't need them.
+
+> Building on the vboxsf **shared folder** (`/mnt/shared`) compounds this — it's
+> slow for Go's many-small-file I/O, and a share that's near full risks write
+> failures. Keep sources (and the Go cache, which already lives at
+> `~/.cache/go-build`) on the guest's ext4 root.
 
 ### `ssh` fails right after start: `Connection reset` / `kex_exchange_identification` / banner timeout
 
