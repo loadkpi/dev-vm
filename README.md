@@ -210,6 +210,69 @@ ssh -p 2222 dev@127.0.0.1 'ps -eo rss,comm --sort=-rss | head'   # find the hog
 > failures. Keep sources (and the Go cache, which already lives at
 > `~/.cache/go-build`) on the guest's ext4 root.
 
+### VM goes unresponsive and is `paused`: host disk full (`VD#0: Host disk full`)
+
+**Symptom.** The VM stops responding — SSH hangs at *"Connection timed out during
+banner exchange"*, `ps`/`find` time out — but unlike the memory freeze above the
+guest isn't thrashing: it's been **suspended by VirtualBox**. `VBoxManage
+showvminfo dev-vm` reports `VMState="paused"`, and `VBox.log` has:
+
+```
+VD#0: Host disk full
+Changing the VM state from 'RUNNING' to 'SUSPENDING'
+```
+
+**Cause.** The guest disk is a **thin VDI** stored on the *host* filesystem. When
+the guest writes new blocks the `.vdi` must grow on the host — but if the host
+disk backing it is full, VirtualBox can't satisfy the write. Rather than corrupt
+the image it **pauses the VM** (`VERR_DISK_FULL`). This is the safe behaviour:
+nothing is lost, no reboot needed. Note the guest's own `df` can still show free
+space — it's the *host* that ran out, not the guest.
+
+Watch for it because everything the guest writes inflates the VDI on the host:
+the `SWAP_GB` swapfile (a full `SWAP_GB` GB), the Go build+module caches
+(`~/.cache/go-build`, `~/go/pkg/mod` — easily several GB), `/tmp` build
+leftovers, downloaded Go toolchains. A thin VDI only ever **grows** toward its
+virtual ceiling and never shrinks on its own.
+
+**Confirm it** (host side):
+
+```sh
+VBoxManage showvminfo dev-vm --machinereadable | grep VMState=      # -> "paused"
+grep -a 'Host disk full' ~/"VirtualBox VMs"/dev-vm/Logs/VBox.log    # the smoking gun
+df -h /                                                             # host filesystem full?
+```
+
+**Recover** — free space on the *host*, then resume (continues exactly where it
+left off, no reboot):
+
+```sh
+# reclaim host space (examples; pick what's safe for you) …
+docker system prune -af ; rm -rf ~/.cache/*
+# … then un-pause:
+VBoxManage controlvm dev-vm resume
+```
+
+**Keep it from recurring.**
+
+- **Reclaim inside the guest** (regenerable; frees guest space so the VDI stops
+  climbing toward its ceiling):
+  ```sh
+  ssh -p 2222 dev@127.0.0.1 'go clean -cache -modcache'
+  ssh -p 2222 dev@127.0.0.1 'find /tmp -maxdepth 1 -name "go-build*" -exec rm -rf {} +'
+  ```
+- **Return freed space to the host** — a thin VDI doesn't shrink until you zero
+  the guest's free blocks and compact it (VM must be **off**):
+  ```sh
+  ssh -p 2222 dev@127.0.0.1 'sudo sh -c "cat /dev/zero > /zero.tmp; sync; rm -f /zero.tmp"'  # zero free space
+  VBoxManage controlvm dev-vm acpipowerbutton
+  while VBoxManage list runningvms | grep -q dev-vm; do sleep 1; done
+  VBoxManage modifymedium disk ~/.local/share/dev-vm/dev-vm.vdi --compact
+  VBoxManage startvm dev-vm --type headless
+  ```
+- Keep host headroom, or lower `SWAP_GB`/`DISK_GB` if the host disk is tight —
+  the swapfile alone claims `SWAP_GB` GB of the VDI.
+
 ### `ssh` fails right after start: `Connection reset` / `kex_exchange_identification` / banner timeout
 
 **Symptom.** Just after `startvm`, `ssh -p 2222 dev@127.0.0.1` returns
