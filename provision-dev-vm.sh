@@ -60,6 +60,25 @@ DISK="$WORKDIR/$VM_NAME.vdi"
 SEED="$WORKDIR/seed.iso"
 BASE="$WORKDIR/${UBUNTU_REL}-cloudimg.img"
 
+# An aborted earlier run can leave the VDI registered in VirtualBox's media
+# registry. qemu-img below rewrites that file with a fresh UUID, so the stale
+# entry goes 'inaccessible' and --resize then dies with a lock-list error.
+# Drop the stale registration first (closemedium leaves the file alone).
+STALE_UUID="$(VBoxManage list hdds 2>/dev/null | awk -v d="$DISK" '
+  BEGIN { RS = ""; FS = "\n" }
+  {
+    uuid = ""; loc = ""
+    for (i = 1; i <= NF; i++) {
+      if ($i ~ /^UUID:/)     { uuid = $i; sub(/^UUID:[ \t]+/, "", uuid) }
+      if ($i ~ /^Location:/) { loc  = $i; sub(/^Location:[ \t]+/, "", loc) }
+    }
+    if (loc == d) print uuid
+  }')"
+if [ -n "$STALE_UUID" ]; then
+  say "Unregistering leftover medium from a previous run…"
+  VBoxManage closemedium disk "$STALE_UUID" || die "could not unregister stale medium $STALE_UUID"
+fi
+
 # ── 1. fetch + convert the cloud image to a thin VDI ─────────────────────────
 if [ ! -f "$BASE" ]; then
   say "Downloading Ubuntu $UBUNTU_REL cloud image…"
