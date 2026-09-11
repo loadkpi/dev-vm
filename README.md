@@ -164,6 +164,52 @@ host is enough and no `fstab` entry is needed.
 
 ## Troubleshooting
 
+### cloud-init fails: `Temporary failure resolving 'archive.ubuntu.com'`
+
+**Symptom.** The VM boots and SSH works, but `cloud-init status --long` reports
+`status: error` on `package_update_upgrade_install`, and
+`/var/log/cloud-init-output.log` is full of
+`E: Failed to fetch … Temporary failure resolving 'archive.ubuntu.com'`.
+Node.js and the CLIs are missing because `runcmd` could not reach
+`deb.nodesource.com` either.
+
+**Cause.** Two independent host-network facts, both outside the guest:
+
+1. **VirtualBox's NAT stack drops UDP.** Seen on macOS 15 + VirtualBox 7.2:
+   TCP through NAT is fine, but *all* UDP is silently dropped — so DNS (udp/53)
+   and NTP (udp/123) fail. Tell-tale sign: `timedatectl` says
+   `System clock synchronized: no` even though the NTP service is active.
+2. **No IPv6 route.** If the host has no IPv6, NAT still hands the guest a v6
+   resolver, so AAAA-first lookups stall until they time out.
+
+**Confirm it** — from the host:
+
+```sh
+ssh -p 2222 dev@127.0.0.1 'curl -sS -m 8 -o /dev/null -w "%{http_code}\n" http://1.1.1.1'   # TCP out: 301 = fine
+ssh -p 2222 dev@127.0.0.1 'dig +short +time=3 @1.1.1.1 archive.ubuntu.com'                  # UDP DNS: times out
+ssh -p 2222 dev@127.0.0.1 'dig +tcp +short +time=3 @1.1.1.1 archive.ubuntu.com'             # same over TCP: answers
+```
+
+TCP answers while UDP times out ⇒ it's the NAT stack, not the guest.
+
+**Fix.** Current `provision-dev-vm.sh` handles both automatically: it sets
+`--natdnshostresolver1 on` on the host side, and its `bootcmd` prefers IPv4 and
+— only if plain resolution is actually broken — switches the guest to
+DNS-over-TLS (tcp/853, which survives a UDP-dropping NAT). On a VM built before
+that fix, apply it by hand and replay provisioning:
+
+```sh
+ssh -p 2222 dev@127.0.0.1
+sudo mkdir -p /etc/systemd/resolved.conf.d
+printf '[Resolve]\nDNS=1.1.1.1#cloudflare-dns.com 1.0.0.1#cloudflare-dns.com\nDNSOverTLS=yes\n' \
+  | sudo tee /etc/systemd/resolved.conf.d/99-dns-over-tls.conf
+echo 'precedence ::ffff:0:0/96  100' | sudo tee -a /etc/gai.conf
+echo 'Acquire::ForceIPv4 "true";'    | sudo tee /etc/apt/apt.conf.d/99force-ipv4
+sudo systemctl restart systemd-resolved
+getent hosts archive.ubuntu.com && sudo apt-get update      # should now work
+sudo cloud-init clean --logs && sudo reboot                 # replay provisioning
+```
+
 ### VM freezes / hangs during a heavy build (`go build`, `go test`, native modules)
 
 **Symptom.** A build kicked off inside the VM makes it go unresponsive: an

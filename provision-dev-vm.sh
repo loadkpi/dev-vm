@@ -113,6 +113,20 @@ chpasswd:
   expire: false
   list: |
     $VM_USER:$VM_PASS
+bootcmd:
+  # VirtualBox's NAT stack is the weak spot of this setup: on some hosts (seen on
+  # macOS 15 + VBox 7.2) it silently drops ALL UDP while TCP keeps working, so DNS
+  # (udp/53) and NTP die and cloud-init fails the package stage with
+  # 'Temporary failure resolving archive.ubuntu.com'. And when the host has no IPv6,
+  # NAT offers no v6 route either, so AAAA-first lookups stall until timeout.
+  # Both are host facts the guest can only work around — do it before any apt run.
+  #
+  # a) prefer IPv4 over a NAT-provided but unroutable IPv6
+  - [ bash, -c, "grep -q '^precedence ::ffff:0:0/96' /etc/gai.conf || echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf" ]
+  - [ bash, -c, "echo 'Acquire::ForceIPv4 \"true\";' > /etc/apt/apt.conf.d/99force-ipv4" ]
+  # b) if plain resolution is broken, fall back to DNS-over-TLS (tcp/853), which
+  #    survives a UDP-dropping NAT. Conditional, so a healthy host keeps its own DNS.
+  - [ bash, -c, "getent hosts archive.ubuntu.com >/dev/null 2>&1 || { sleep 5; getent hosts archive.ubuntu.com >/dev/null 2>&1; } || { mkdir -p /etc/systemd/resolved.conf.d; { echo '[Resolve]'; echo 'DNS=1.1.1.1#cloudflare-dns.com 1.0.0.1#cloudflare-dns.com'; echo 'DNSOverTLS=yes'; } > /etc/systemd/resolved.conf.d/99-dns-over-tls.conf; systemctl restart systemd-resolved; sleep 3; }" ]
 package_update: true
 package_upgrade: false
 packages:
@@ -184,6 +198,10 @@ say "Creating VM '$VM_NAME' (${RAM_MB} MB RAM, ${CPUS} vCPU)…"
 VBoxManage createvm --name "$VM_NAME" --ostype Ubuntu_64 --register
 VBoxManage modifyvm "$VM_NAME" --memory "$RAM_MB" --cpus "$CPUS" \
   --nic1 nat --graphicscontroller vmsvga --vram 16 --audio-driver none --firmware efi
+# Answer guest DNS via the host's resolver instead of proxying queries out of the
+# NAT stack — fixes guest DNS on hosts where that proxy is unreliable. (Where NAT
+# drops UDP outright this cannot help; the guest-side DoT fallback covers that.)
+VBoxManage modifyvm "$VM_NAME" --natdnshostresolver1 on
 # NAT port-forward for SSH
 VBoxManage modifyvm "$VM_NAME" --natpf1 "ssh,tcp,127.0.0.1,$SSH_PORT,,22"
 
