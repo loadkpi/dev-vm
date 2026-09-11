@@ -15,13 +15,15 @@ agents develop in. Optimized for small disk.
 
 - VirtualBox (`VBoxManage`)
 - `qemu-img` — convert the cloud image to VDI
-- a seed-ISO builder: one of `cloud-localds`, `genisoimage`, `mkisofs`, `xorriso`
+- a seed-ISO builder: one of `cloud-localds`, `genisoimage`, `mkisofs`, `xorriso`,
+  or `hdiutil` (built into macOS — nothing to install there)
 
 ```sh
 # Debian/Ubuntu host
 sudo apt install qemu-utils cloud-image-utils genisoimage
 # macOS host
-brew install qemu cdrtools          # VBoxManage comes with VirtualBox
+brew install qemu                   # VBoxManage comes with VirtualBox;
+                                    # the seed ISO is built with built-in hdiutil
 ```
 
 ## Usage

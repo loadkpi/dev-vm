@@ -11,9 +11,10 @@
 #   - cloud-init auto-grows the rootfs to fill the virtual disk on first boot
 #
 # Dependencies (host): VBoxManage, qemu-img, and one of
-#   cloud-localds | genisoimage | mkisofs | xorriso   (to build the seed ISO)
+#   cloud-localds | genisoimage | mkisofs | xorriso | hdiutil  (to build the seed ISO)
 # Install on Debian/Ubuntu: sudo apt install qemu-utils cloud-image-utils genisoimage
-# Install on macOS (brew):  brew install qemu cdrtools  (VirtualBox provides VBoxManage)
+# Install on macOS (brew):  brew install qemu  (VirtualBox provides VBoxManage; the
+#                           seed ISO is built with the built-in hdiutil — no extra pkg)
 
 set -euo pipefail
 
@@ -71,11 +72,13 @@ VBoxManage modifymedium disk "$DISK" --resize "$((DISK_GB * 1024))"
 # ── 2. build the cloud-init NoCloud seed ISO ─────────────────────────────────
 say "Building cloud-init seed…"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-cat > "$TMP/meta-data" <<EOF
+# hdiutil (macOS) images a *directory*, so stage the NoCloud files in one.
+CIDATA="$TMP/cidata"; mkdir -p "$CIDATA"
+cat > "$CIDATA/meta-data" <<EOF
 instance-id: $VM_NAME
 local-hostname: $VM_NAME
 EOF
-cat > "$TMP/user-data" <<EOF
+cat > "$CIDATA/user-data" <<EOF
 #cloud-config
 hostname: $VM_NAME
 users:
@@ -140,15 +143,21 @@ runcmd:
 EOF
 
 if command -v cloud-localds >/dev/null; then
-  cloud-localds "$SEED" "$TMP/user-data" "$TMP/meta-data"
+  cloud-localds "$SEED" "$CIDATA/user-data" "$CIDATA/meta-data"
 elif command -v genisoimage >/dev/null; then
-  genisoimage -output "$SEED" -volid cidata -joliet -rock "$TMP/user-data" "$TMP/meta-data" >/dev/null 2>&1
+  genisoimage -output "$SEED" -volid cidata -joliet -rock "$CIDATA/user-data" "$CIDATA/meta-data" >/dev/null 2>&1
 elif command -v mkisofs >/dev/null; then
-  mkisofs -output "$SEED" -volid cidata -joliet -rock "$TMP/user-data" "$TMP/meta-data" >/dev/null 2>&1
+  mkisofs -output "$SEED" -volid cidata -joliet -rock "$CIDATA/user-data" "$CIDATA/meta-data" >/dev/null 2>&1
 elif command -v xorriso >/dev/null; then
-  xorriso -as mkisofs -o "$SEED" -V cidata -J -r "$TMP/user-data" "$TMP/meta-data" >/dev/null 2>&1
+  xorriso -as mkisofs -o "$SEED" -V cidata -J -r "$CIDATA/user-data" "$CIDATA/meta-data" >/dev/null 2>&1
+elif command -v hdiutil >/dev/null; then
+  # macOS ships no mkisofs; hdiutil makehybrid is the built-in equivalent, so a
+  # stock mac needs no extra package. Joliet keeps the lowercase file names that
+  # cloud-init expects; the volume name becomes the NoCloud 'cidata' label.
+  rm -f "$SEED"
+  hdiutil makehybrid -iso -joliet -default-volume-name cidata -o "$SEED" "$CIDATA" >/dev/null
 else
-  die "need one of: cloud-localds, genisoimage, mkisofs, xorriso to build the seed ISO"
+  die "need one of: cloud-localds, genisoimage, mkisofs, xorriso, hdiutil to build the seed ISO"
 fi
 
 # ── 3. create + configure the VM ─────────────────────────────────────────────

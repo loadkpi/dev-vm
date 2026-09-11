@@ -52,7 +52,8 @@ VirtualBox с Node.js, Claude Code и Codex CLI через cloud-init. Для с
 - **Тонкий VDI + автоувеличение rootfs** — экономия диска реально работает и
   честно описана в README.
 - **Fallback-цепочка сборщиков seed ISO** (`cloud-localds` → `genisoimage` →
-  `mkisofs` → `xorriso`) — снижает трение при установке на разных хостах.
+  `mkisofs` → `xorriso` → `hdiutil`) — снижает трение при установке на разных
+  хостах; на macOS хватает встроенного `hdiutil`, доставлять ничего не нужно.
 - **Фикс `56cab3a` (npm prefix в `~/.npm-global`)** — правильное решение:
   CLI обновляются без root, нет столкновений с системным npm.
 - **NAT port-forward привязан к `127.0.0.1`** (`provision-dev-vm.sh:154`) —
