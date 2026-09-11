@@ -229,6 +229,8 @@ cat <<EOF
      VBoxManage controlvm "$VM_NAME" poweroff        # hard stop — only if hung
      VBoxManage startvm   "$VM_NAME" --type headless # start again
      VBoxManage unregistervm "$VM_NAME" --delete     # destroy + reclaim disk
+     ssh-keygen -R '[127.0.0.1]:$SSH_PORT'           # after a rebuild: drop the
+                                                     # old host key from known_hosts
 
   ⚠  Prefer 'acpipowerbutton' (clean shutdown). A hard 'poweroff' mid-apt can
      corrupt the kernel/initrd and leave the VM unbootable at GRUB.

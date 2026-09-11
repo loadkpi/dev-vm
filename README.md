@@ -210,6 +210,28 @@ getent hosts archive.ubuntu.com && sudo apt-get update      # should now work
 sudo cloud-init clean --logs && sudo reboot                 # replay provisioning
 ```
 
+### `REMOTE HOST IDENTIFICATION HAS CHANGED!` after a rebuild
+
+**Symptom.** `ssh -p 2222 dev@127.0.0.1` refuses to connect with a big warning
+banner and `Offending ED25519 key in ~/.ssh/known_hosts:<N>`.
+
+**Cause.** Not an attack — a rebuilt VM generates a fresh SSH host key, but it
+lives at the same `[127.0.0.1]:2222` as the old one, so the pinned key no longer
+matches.
+
+**Verify, then fix.** Confirm the offered fingerprint really is the new VM's
+before trusting it (compare with the key read from inside the guest), then drop
+the stale entry:
+
+```sh
+# read the guest's own key over a session that ignores the pinned one, and check
+# it matches the fingerprint ssh just warned about
+ssh -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no \
+  dev@127.0.0.1 'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub'
+
+ssh-keygen -R '[127.0.0.1]:2222'        # matches? drop it — keeps a known_hosts.old backup
+```
+
 ### VM freezes / hangs during a heavy build (`go build`, `go test`, native modules)
 
 **Symptom.** A build kicked off inside the VM makes it go unresponsive: an
